@@ -1,0 +1,236 @@
+mport csv
+import json
+from typing import List, Dict
+import openai
+import asyncio
+import time
+
+# Set up the OpenAI API key
+openai.api_key = "api_key"
+
+async def evaluate_citation_quality(input_csv: str, output_json: str, output_csv: str):
+    """
+    Evaluates citation quality metrics for each statement in the input CSV and outputs results to JSON and CSV.
+
+    Args:
+        input_csv (str): Path to the input CSV file.
+        output_json (str): Path to the output JSON file.
+        output_csv (str): Path to the output CSV file.
+    """
+    with open(input_csv, "r") as file:
+        reader = csv.DictReader(file)
+        data = list(reader)
+
+    results = []
+
+    for row in data:
+        question = row["question"]
+        response = row["response"]
+        context_id = row["context_id"]
+        statement_index = int(row["statement_index"])
+        statement = row["statement"]
+        citations = row["citations"]
+        snippets = row["snippets"]
+        documents = row["documents"]
+
+        if citations != "[]":
+            # Evaluate metrics for statements with citations
+            evaluation_result = await evaluate_statement(question, statement, snippets)
+            results.append({
+                "question": question,
+                "response": response,
+                "context_id": context_id,
+                "statement_index": statement_index,
+                "statement": statement,
+                "citations": citations,
+                "snippets": snippets,
+                "documents": documents,
+                **evaluation_result,
+            })
+        else:
+            # Handle statements without citations
+            citation_check = await check_need_citation(question, response, statement)
+            results.append({
+                "question": question,
+                "response": response,
+                "context_id": context_id,
+                "statement_index": statement_index,
+                "statement": statement,
+                "citations": citations,
+                "snippets": snippets,
+                "documents": documents,
+                "recall": 0.0,
+                "precision": 0.0,
+                "F1": 0.0,
+                "recall_reasoning": "No citation provided for evaluation.",
+                "precision_reasoning": "No citation provided for evaluation.",
+                **citation_check,
+            })
+
+    # Write results to JSON
+    with open(output_json, "w") as json_file:
+        json.dump(results, json_file, indent=4)
+
+    # Write results to CSV
+    with open(output_csv, "w", newline="") as csv_file:
+        fieldnames = [
+            "question", "response", "context_id", "statement_index", "statement", "citations",
+            "snippets", "documents", "recall", "precision", "F1", "recall_reasoning",
+            "precision_reasoning", "need_citation", "citation_analysis", "input_tokens",
+            "output_tokens", "total_tokens"
+        ]
+        writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(results)
+
+async def evaluate_statement(question: str, statement: str, snippets: str) -> Dict[str, float]:
+    """
+    Evaluates a single statement against concatenated snippets for citation quality metrics.
+
+    Args:
+        question (str): The user's question.
+        statement (str): A single statement from the response.
+        snippets (str): Concatenated citation snippets.
+
+    Returns:
+        Dict[str, float]: Recall, Precision, F1 metrics, and reasoning.
+    """
+    # Evaluate recall
+    recall_prompt = f"""
+    You are an expert in evaluating text quality. Below is a question, a statement from an AI assistant's response,
+    and concatenated citation snippets. Please assess whether the statement is supported by the snippets. 
+    Return the output as a JSON object with the keys "Recall" and "Reasoning".
+
+    Example output: {{ "Recall": 0.5, "Reasoning": "Reason for the score." }}
+
+    Question: {question}
+    Statement: {statement}
+    Snippets: {snippets}
+    """
+
+    recall_result = await query_openai(recall_prompt, keys=["Recall", "Reasoning"])
+
+    # Evaluate precision
+    precision_prompt = f"""
+    You are an expert in evaluating text quality. Below is a question, a statement from an AI assistant's response,
+    and concatenated citation snippets. Please assess whether the snippets are relevant to the statement.
+    Return the output as a JSON object with the keys "Precision" and "Reasoning".
+
+    Example output: {{ "Precision": 1, "Reasoning": "Reason for the score." }}
+
+    Question: {question}
+    Statement: {statement}
+    Snippets: {snippets}
+    """
+
+    precision_result = await query_openai(precision_prompt, keys=["Precision", "Reasoning"])
+
+    # Calculate F1
+    recall = float(recall_result["Recall"])
+    precision = float(precision_result["Precision"])
+    f1 = (2 * precision * recall) / (precision + recall) if (precision + recall) > 0 else 0.0
+
+    return {
+        "recall": recall,
+        "precision": precision,
+        "F1": f1,
+        "recall_reasoning": recall_result["Reasoning"],
+        "precision_reasoning": precision_result["Reasoning"],
+        "input_tokens": recall_result["input_tokens"] + precision_result["input_tokens"],
+        "output_tokens": recall_result["output_tokens"] + precision_result["output_tokens"],
+        "total_tokens": recall_result["total_tokens"] + precision_result["total_tokens"],
+    }
+
+async def check_need_citation(question: str, response: str, statement: str) -> Dict[str, str]:
+    """
+    Checks whether a statement without citations requires one.
+
+    Args:
+        question (str): The user's question.
+        response (str): The full response from the model.
+        statement (str): A single statement from the response.
+
+    Returns:
+        Dict[str, str]: Need citation and analysis.
+    """
+    citation_prompt = f"""
+    You are an expert in evaluating text quality. You will receive a user’s question regarding
+    their uploaded document (due to the length of the document, it is not shown to you), an AI
+    assistant’s response based on the document, and a sentence from the response. Your task is to
+    determine whether this sentence is a factual statement made based on the information in the
+    document that requires citation, rather than an introductory sentence, transition sentence, or a
+    summary, reasoning, or inference based on the previous response.
+    Ensure that you do not use any other external information during your evaluation.
+    Please first provide your judgment (answer with [[Yes]] or [[No]]), then provide your analysis
+    in the format “Need Citation: [[Yes/No]] Analysis: ...”.
+    
+    Example output: {{ "Need Citation": "No", "Analysis": "Reason for your answer." }}
+
+    <question>
+    {question}
+    </question>
+    <response>
+    {response}
+    </response>
+    <statement>
+    {statement}
+    </statement>
+    """
+
+    result = await query_openai(citation_prompt, keys=["Need Citation", "Analysis"])
+
+    return {
+        "need_citation": result["Need Citation"],
+        "citation_analysis": result["Analysis"],
+        "input_tokens": result["input_tokens"],
+        "output_tokens": result["output_tokens"],
+        "total_tokens": result["total_tokens"],
+    }
+
+async def query_openai(prompt: str, keys: List[str]) -> Dict[str, str]:
+    """
+    Queries the OpenAI model with a given prompt and returns the response.
+
+    Args:
+        prompt (str): The input prompt for OpenAI.
+        keys (List[str]): List of keys to extract from the JSON response.
+
+    Returns:
+        Dict[str, str]: Parsed response values and token information.
+    """
+    max_retries = 5
+    retry_delay = 2  # Initial delay in seconds
+
+    for attempt in range(max_retries):
+        try:
+
+            response = await openai.ChatCompletion.acreate(
+                model="gpt-4",
+                messages=[{"role": "system", "content": prompt}]
+            )
+            response_text = response["choices"][0]["message"]["content"].strip()
+            response_json = json.loads(response_text)
+
+            # Add token usage data
+            token_usage = response["usage"]
+
+            return {
+                **{key: response_json[key] for key in keys},
+                "input_tokens": token_usage["prompt_tokens"],
+                "output_tokens": token_usage["completion_tokens"],
+                "total_tokens": token_usage["total_tokens"],
+            }
+        except Exception as e:
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+                retry_delay *= 2
+            else:
+                raise e
+
+# Entry point for asynchronous execution
+if _name_ == "_main_":
+    asyncio.run(evaluate_citation_quality(
+        input_csv='C:\\Users\\suman.acharya\\OneDrive - Fractal Analytics Limited\\pythonProject\\inline-citations\\enhanced_data.csv',
+        output_json="output_data_with_usage.json",
+        output_csv="output_data_with_usage_and_metrics.csv"
+    ))
