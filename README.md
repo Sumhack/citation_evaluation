@@ -42,15 +42,68 @@ The input CSV should contain the following columns:
 
 ## 🧠 Evaluation Logic
 
-### For Statements with Citations:
-- **Recall**: Is the statement actually supported by the citations?
-- **Precision**: Are the citations relevant to the statement?
-- **F1 Score**: Harmonic mean of Recall and Precision.
+The script evaluates the quality of citations using three main metrics: **Recall**, **Precision**, and **F1 Score**. These are determined by querying the GPT-4 model with custom prompts that assess the alignment between a statement and its cited evidence.
 
-### For Statements Without Citations:
-- The model checks if the statement is a factual claim that **requires a citation** or is an introductory/summary/transition sentence that does not.
+### 🔎 Recall
+
+**Definition**: Measures how well the **statement is supported** by the provided citation snippets.
+
+- **Prompt**: The model is asked whether the statement is fully, partially, or not at all supported by the snippets.
+- **Scale**: Returns a numeric value between `0.0` (not supported) and `1.0` (fully supported), along with reasoning.
+
+> High recall = the citation snippets contain all or most of the information needed to support the statement.
 
 ---
+
+### 🎯 Precision
+
+**Definition**: Measures how relevant the **citation snippets are to the statement**.
+
+- **Prompt**: The model is asked if the snippets are actually about the statement (or if they include unrelated info).
+- **Scale**: Returns a numeric value between `0.0` (not relevant) and `1.0` (completely relevant), with an explanation.
+
+> High precision = the snippets focus directly on the claim made in the statement, without introducing unrelated details.
+
+---
+
+### 🔁 F1 Score
+
+**Definition**: The harmonic mean of precision and recall, used to balance both aspects.
+
+\[
+F1 = \frac{2 \times (Precision \times Recall)}{Precision + Recall}
+\]
+
+- If either precision or recall is zero, F1 is zero.
+- A high F1 score indicates both that the citation supports the claim and is highly relevant.
+
+---
+
+### 🧠 Example Flow (for statements with citations)
+
+1. **Recall Check**: Ask the model — *"Does the statement align with the content of the citations?"*
+2. **Precision Check**: Ask the model — *"Do the citations pertain specifically to this statement?"*
+3. **F1 Calculation**: Compute based on recall and precision values.
+
+The results include:
+- Numerical scores (Recall, Precision, F1)
+- Model-generated justifications for each score
+- Token usage metadata for performance tracking
+
+---
+
+### 🕵️ Statements Without Citations
+
+For uncited statements, the script checks:
+
+- **"Does this statement need a citation?"**
+- It flags only factual or document-dependent statements — not summaries, transitions, or general language.
+- The model returns:
+  - `Need Citation: Yes/No`
+  - A short explanation of why
+
+---
+
 
 ## ⚙️ Requirements
 
