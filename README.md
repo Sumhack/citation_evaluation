@@ -12,6 +12,11 @@ This project evaluates the quality and necessity of citations in AI-generated te
 
 ---
 
+## 🧭 Architecture Overview
+
+![Citation Evaluation Architecture](citation_evaluation_architecture_diagram.png)
+
+
 ## 📂 Input Format
 
 The input CSV should contain the following columns:
